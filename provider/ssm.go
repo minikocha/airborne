@@ -82,15 +82,14 @@ func (p *SsmProvider) Output() error {
 	semCh := make(chan struct{}, p.concurrency)
 	defer close(semCh)
 	errCh := make(chan error, 1)
-	//defer close(err)
+	defer close(errCh)
+	finCh := make(chan struct{}, 1)
+	defer close(finCh)
 
-	for _, param := range output.Parameters {
-		select {
-		case err := <-errCh:
-			log.Print("error returned")
-			wg.Wait()
-			return err
-		case semCh <- struct{}{}:
+	go func() {
+		for _, param := range output.Parameters {
+			semCh <- struct{}{}
+
 			wg.Add(1)
 			go func(m string, v string) {
 				defer wg.Done()
@@ -102,7 +101,16 @@ func (p *SsmProvider) Output() error {
 				}
 			}(p.mappings[*param.Name], *param.Value)
 		}
+		wg.Wait()
+		finCh <- struct{}{}
+	}()
+
+	select {
+	case <-finCh:
+		// nothing to do
+	case err := <-errCh:
+		return err
 	}
-	wg.Wait() // TODO: forを抜けた後のゴルーチンのエラーをケアできていない
+
 	return nil
 }

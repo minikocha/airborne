@@ -122,17 +122,14 @@ func (p *S3Provider) Output() error {
 	semCh := make(chan struct{}, p.concurrency)
 	defer close(semCh)
 	errCh := make(chan error, 1)
-	//defer close(err)
+	defer close(errCh)
+	finCh := make(chan struct{}, 1)
+	defer close(finCh)
 
-	for k, v := range p.mappings {
-		log.Printf("s3://%s/%s -> %s", *v.Bucket, *v.Key, k)
+	go func() {
+		for k, v := range p.mappings {
+			semCh <- struct{}{}
 
-		select {
-		case err := <-errCh:
-			log.Print("error returned")
-			wg.Wait()
-			return err
-		case semCh <- struct{}{}:
 			wg.Add(1)
 			go func(k string, v *s3.GetObjectInput) {
 				defer wg.Done()
@@ -144,7 +141,16 @@ func (p *S3Provider) Output() error {
 				}
 			}(k, v)
 		}
+		wg.Wait()
+		finCh <- struct{}{}
+	}()
+
+	select {
+	case <-finCh:
+		// nothing to do
+	case err := <-errCh:
+		return err
 	}
-	wg.Wait() // TODO: forを抜けた後のゴルーチンのエラーをケアできていない
+
 	return nil
 }

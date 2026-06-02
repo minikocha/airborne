@@ -78,10 +78,12 @@ func NewS3Provider(opts ...S3ProviderOption) *S3Provider {
 func (p *S3Provider) Add(src string, dest string) error {
 	d := strings.SplitN(src, "/", 4)
 	if len(d) != 4 || d[0] != "s3:" || strings.HasSuffix(d[3], "/") {
-		return fmt.Errorf("Invalid path: %s", src)
+		return fmt.Errorf("Invalid s3 path: %s", src)
 	}
 
-	// TODO: destのバリデーション
+	if len(dest) == 0 || strings.HasSuffix(dest, "/") {
+		return fmt.Errorf("Invalid file path: %s", dest)
+	}
 
 	p.mappings[dest] = &s3.GetObjectInput{
 		Bucket: aws.String(d[2]),
@@ -97,7 +99,7 @@ func (p *S3Provider) copy(input *s3.GetObjectInput, path string) error {
 	}
 	defer output.Body.Close()
 
-	if err := createDir(filepath.Dir(path)); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return err
 	}
 

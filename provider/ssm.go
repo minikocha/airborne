@@ -52,7 +52,9 @@ func (p *SsmProvider) Add(src string, dest string) error {
 		return fmt.Errorf("Invalid parameter name: %s", src)
 	}
 
-	// TODO: destのバリデーション
+	if len(dest) == 0 || strings.HasSuffix(dest, "/") {
+		return fmt.Errorf("Invalid file path: %s", dest)
+	}
 
 	p.mappings[src] = dest
 	p.getParameterInput.Names = append(p.getParameterInput.Names, src)
@@ -60,19 +62,9 @@ func (p *SsmProvider) Add(src string, dest string) error {
 }
 
 func (p *SsmProvider) create(path string, body string) error {
-	if err := createDir(filepath.Dir(path)); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return err
 	}
-
-	//file, err := os.Create(path)
-	//if err != nil {
-	//	return nil
-	//}
-	//defer file.Close()
-	//
-	//if _, err := io.Copy(file, bytes.NewBufferString(body)); err != nil {
-	//	return err
-	//}
 
 	if err := os.WriteFile(path, []byte(body), 0644); err != nil {
 		return err

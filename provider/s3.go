@@ -20,8 +20,6 @@ const (
 	s3DefaultConcurrency = 3
 )
 
-type S3ProviderOption func(*S3Provider) error
-
 type S3Provider struct {
 	bufferPool  sync.Pool
 	bufferSize  int
@@ -29,6 +27,30 @@ type S3Provider struct {
 	concurrency int
 	mappings    map[string]*s3.GetObjectInput
 }
+
+type S3ProviderOption func(*S3Provider) error
+
+//func WithBufferSize(size int) S3ProviderOption {
+//	return func(p *S3Provider) error {
+//		if size < 1 {
+//			return fmt.Errorf("buffer size must be greater than 0: %d", size)
+//		}
+//
+//		p.bufferSize = size
+//		return nil
+//	}
+//}
+
+//func WithMaxConcurrency(num int) S3ProviderOption {
+//	return func(p *S3Provider) error {
+//		if num < 1 {
+//			return fmt.Errorf("max concurrency must be greater than 0: %d", num)
+//		}
+//
+//		p.concurrency = num
+//		return nil
+//	}
+//}
 
 func NewS3Provider(opts ...S3ProviderOption) *S3Provider {
 	p := &S3Provider{
@@ -52,28 +74,6 @@ func NewS3Provider(opts ...S3ProviderOption) *S3Provider {
 	p.bufferPool = sync.Pool{New: func() any { return make([]byte, 1024*p.bufferSize) }}
 	return p
 }
-
-//func WithBufferSize(size int) S3ProviderOption {
-//	return func(p *S3Provider) error {
-//		if size < 1 {
-//			return fmt.Errorf("buffer size must be greater than 0: %d", size)
-//		}
-//
-//		p.bufferSize = size
-//		return nil
-//	}
-//}
-
-//func WithMaxConcurrency(num int) S3ProviderOption {
-//	return func(p *S3Provider) error {
-//		if num < 1 {
-//			return fmt.Errorf("max concurrency must be greater than 0: %d", num)
-//		}
-//
-//		p.concurrency = num
-//		return nil
-//	}
-//}
 
 func (p *S3Provider) Add(src string, dest string) error {
 	d := strings.SplitN(src, "/", 4)

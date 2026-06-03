@@ -17,14 +17,14 @@ const (
 	ssmDefaultConcurrency = 3
 )
 
-type SsmProviderOption func(*SsmProvider) error
-
 type SsmProvider struct {
 	client            *ssm.Client
 	concurrency       int
 	mappings          map[string]string
 	getParameterInput *ssm.GetParametersInput
 }
+
+type SsmProviderOption func(*SsmProvider) error
 
 func NewSsmProvider(opts ...SsmProviderOption) *SsmProvider {
 	p := &SsmProvider{

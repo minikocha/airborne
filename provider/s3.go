@@ -2,10 +2,12 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -81,10 +83,6 @@ func (p *S3Provider) Add(src string, dest string) error {
 		return fmt.Errorf("Invalid s3 path: %s", src)
 	}
 
-	if len(dest) == 0 || strings.HasSuffix(dest, "/") {
-		return fmt.Errorf("Invalid file path: %s", dest)
-	}
-
 	p.mappings[dest] = &s3.GetObjectInput{
 		Bucket: aws.String(d[2]),
 		Key:    aws.String(d[3]),
@@ -92,22 +90,29 @@ func (p *S3Provider) Add(src string, dest string) error {
 	return nil
 }
 
-func (p *S3Provider) copy(input *s3.GetObjectInput, path string) error {
+func (p *S3Provider) copy(input *s3.GetObjectInput, dest string) error {
+	if i, err := os.Stat(dest); err != nil && !errors.Is(err, os.ErrNotExist) {
+		// NOTE: destが存在しないパス以外のエラー(e.g.: os.ErrPermission)だった場合
+		return err
+	} else if err == nil && i.IsDir() {
+		// NOTE: destがディレクトリの場合はdest配下にファイル名を保持してコピーする
+		dest = path.Join(dest, filepath.Base(*input.Key))
+	} else if _, err := os.Stat(filepath.Dir(dest)); err != nil {
+		// NOTE: destがディレクトリでない（ファイル扱い）状況で親ディレクトリが存在しない
+		return err
+	}
+
+	file, err := os.Create(dest)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
 	output, err := p.client.GetObject(context.TODO(), input)
 	if err != nil {
 		return err
 	}
 	defer output.Body.Close()
-
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-		return err
-	}
-
-	file, err := os.Create(path)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
 
 	buf := p.bufferPool.Get().([]byte)
 	defer p.bufferPool.Put(buf)
@@ -118,6 +123,10 @@ func (p *S3Provider) copy(input *s3.GetObjectInput, path string) error {
 }
 
 func (p *S3Provider) Output() error {
+	if len(p.mappings) == 0 {
+		return nil
+	}
+
 	var wg sync.WaitGroup
 	semCh := make(chan struct{}, p.concurrency)
 	defer close(semCh)

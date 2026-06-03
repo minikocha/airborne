@@ -2,15 +2,18 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync"
 
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
+	"github.com/aws/aws-sdk-go-v2/service/ssm/types"
 )
 
 const (
@@ -52,27 +55,34 @@ func (p *SsmProvider) Add(src string, dest string) error {
 		return fmt.Errorf("Invalid parameter name: %s", src)
 	}
 
-	if len(dest) == 0 || strings.HasSuffix(dest, "/") {
-		return fmt.Errorf("Invalid file path: %s", dest)
-	}
-
 	p.mappings[src] = dest
 	p.getParameterInput.Names = append(p.getParameterInput.Names, src)
 	return nil
 }
 
-func (p *SsmProvider) create(path string, body string) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+func (p *SsmProvider) create(param types.Parameter, dest string) error {
+	if i, err := os.Stat(dest); err != nil && !errors.Is(err, os.ErrNotExist) {
+		// NOTE: destが存在しないパス以外のエラー(e.g.: os.ErrPermission)だった場合
+		return err
+	} else if err == nil && i.IsDir() {
+		// NOTE: destがディレクトリの場合はdest配下にファイル名を保持してコピーする
+		dest = path.Join(dest, filepath.Base(*param.Name))
+	} else if _, err := os.Stat(filepath.Dir(dest)); err != nil {
+		// NOTE: destがディレクトリでない（ファイル扱い）状況で親ディレクトリが存在しない
 		return err
 	}
 
-	if err := os.WriteFile(path, []byte(body), 0644); err != nil {
+	if err := os.WriteFile(dest, []byte(*param.Value), 0644); err != nil {
 		return err
 	}
 	return nil
 }
 
 func (p *SsmProvider) Output() error {
+	if len(p.getParameterInput.Names) == 0 {
+		return nil
+	}
+
 	output, err := p.client.GetParameters(context.TODO(), p.getParameterInput)
 	if err != nil {
 		return err
@@ -91,15 +101,15 @@ func (p *SsmProvider) Output() error {
 			semCh <- struct{}{}
 
 			wg.Add(1)
-			go func(m string, v string) {
+			go func(param types.Parameter, m string) {
 				defer wg.Done()
 				defer func() { <-semCh }()
 
-				if err := p.create(m, v); err != nil {
+				if err := p.create(param, m); err != nil {
 					log.Print(err)
 					errCh <- err
 				}
-			}(p.mappings[*param.Name], *param.Value)
+			}(param, p.mappings[*param.Name])
 		}
 		wg.Wait()
 		finCh <- struct{}{}

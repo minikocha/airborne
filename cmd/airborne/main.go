@@ -12,11 +12,6 @@ import (
 )
 
 func main() {
-	// TODO: 関係のない引数が渡された時にエラーにする
-	// TODO: 既存のファイルを上書きする・しないを選択できるようにする: flag.Bool("overwrite"...)
-	// TODO: S3Providerの`bufferSize`を設定できるようにする: flag.Int("buffer-size"...)
-	// TODO: S3Providerの`maxConcurrency`を設定できるようにする: flag.Int("max-concurrency"...)
-
 	versionFlag := flag.Bool("version", false, "show version")
 	flag.Parse()
 	if *versionFlag {
@@ -25,8 +20,9 @@ func main() {
 	}
 
 	a := airborne.NewAirborne()
-	a.AddProvider("s3", provider.NewS3Provider())
 	a.AddProvider("ssm", provider.NewSsmProvider())
+	a.AddProvider("s3sync", provider.NewS3SyncProvider())
+	a.AddProvider("s3", provider.NewS3Provider())
 
 	if err := loadEnvVars(a); err != nil {
 		log.Fatal(err)
@@ -43,22 +39,31 @@ func loadEnvVars(a *airborne.Airborne) error {
 			continue
 		}
 
-		esd := strings.SplitN(e, "=", 3) // NOTE: npa -> Environment name, Source, Destination
-		if len(esd) != 3 {
+		kv := strings.SplitN(e, "=", 2)
+		if len(kv) != 2 {
+			return fmt.Errorf("Invalid environment variable: %s", e)
+		}
+
+		pos := strings.SplitN(kv[1], "|", 2)
+		if len(pos) != 2 {
 			return fmt.Errorf("Invalid environment variable: %s", e)
 		}
 
 		switch {
-		case strings.HasPrefix(esd[0], "AIRBORNE_SUPPLY_S3_"):
-			if err := a.AddSupply("s3", esd[1], esd[2]); err != nil {
+		case strings.HasPrefix(kv[0], "AIRBORNE_SUPPLY_SSM_"):
+			if err := a.AddSupply("ssm", pos[0], pos[1]); err != nil {
 				return err
 			}
-		case strings.HasPrefix(esd[0], "AIRBORNE_SUPPLY_SSM_"):
-			if err := a.AddSupply("ssm", esd[1], esd[2]); err != nil {
+		case strings.HasPrefix(kv[0], "AIRBORNE_SUPPLY_S3_SYNC_"):
+			if err := a.AddSupply("s3sync", pos[0], pos[1]); err != nil {
+				return err
+			}
+		case strings.HasPrefix(kv[0], "AIRBORNE_SUPPLY_S3_"):
+			if err := a.AddSupply("s3", pos[0], pos[1]); err != nil {
 				return err
 			}
 		default:
-			return fmt.Errorf("No provider was found to match the given supply: %s", esd[0])
+			return fmt.Errorf("No provider was found to match the given supply: %s", kv[0])
 		}
 	}
 	return nil

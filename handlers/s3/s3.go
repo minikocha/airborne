@@ -23,21 +23,14 @@ const (
 )
 
 type mapping struct {
-	dest  map[string]struct{}
-	input *s3.GetObjectInput
-}
-
-func NewMapping(dest string, input *s3.GetObjectInput) *mapping {
-	m := &mapping{dest: make(map[string]struct{})}
-	m.dest[dest] = struct{}{}
-	m.input = input
-	return m
+	dest  []string           // TODO: `Destinations`にリネーム
+	input *s3.GetObjectInput // TODO: `GetObjectInput`にリネーム
 }
 
 type Handler struct {
 	bufferPool  sync.Pool
 	bufferSize  int
-	client      *s3.Client
+	client      *s3.Client // TODO: 大きいファイルを見越して、aws-sdk-go-v2/feature/s3/transfermanager使う
 	concurrency int
 	mappings    map[string]*mapping
 }
@@ -96,17 +89,16 @@ func (handler *Handler) Add(src string, dest string) error {
 		return fmt.Errorf("Invalid s3 path: %s", src)
 	}
 
-	dest = strings.TrimSuffix(dest, "/")
-
 	if m, ok := handler.mappings[src]; ok {
-		m.dest[dest] = struct{}{}
+		m.dest = append(m.dest, dest)
 	} else {
-		handler.mappings[src] = NewMapping(
-			dest,
-			&s3.GetObjectInput{
+		m = &mapping{
+			dest: []string{dest},
+			input: &s3.GetObjectInput{
 				Bucket: aws.String(s[2]),
 				Key:    aws.String(s[3])},
-		)
+		}
+		handler.mappings[src] = m
 	}
 
 	return nil
@@ -156,7 +148,7 @@ func (handler *Handler) Run(ctx context.Context) error {
 	}
 }
 
-func (handler *Handler) run(ctx context.Context, input *s3.GetObjectInput, dest map[string]struct{}) error {
+func (handler *Handler) run(ctx context.Context, input *s3.GetObjectInput, dest []string) error {
 	output, err := handler.client.GetObject(ctx, input)
 	if err != nil {
 		return err
@@ -173,6 +165,7 @@ func (handler *Handler) run(ctx context.Context, input *s3.GetObjectInput, dest 
 		os.Remove(tmp.Name())
 	}()
 
+	// そもそも一時ファイルに書き出さないで、初めから一斉に複数の宛先に書き込めば良い。
 	buf := handler.bufferPool.Get().([]byte)
 	defer handler.bufferPool.Put(buf)
 	if _, err = io.CopyBuffer(tmp, output.Body, buf); err != nil {
@@ -184,25 +177,35 @@ func (handler *Handler) run(ctx context.Context, input *s3.GetObjectInput, dest 
 	}
 
 	var w []io.Writer
-	for d := range dest {
-		if i, err := os.Stat(d); err != nil && !errors.Is(err, os.ErrNotExist) {
-			// NOTE: when an error other than os.ErrNotExist occurs
+	opened := make(map[string]struct{})
+	for _, d := range dest {
+		i, err := os.Stat(d)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
-		} else if err == nil && i.IsDir() {
-			// NOTE: when `dest` is a directory
+		}
+
+		if i != nil && i.IsDir() {
 			d = path.Join(d, filepath.Base(*input.Key))
-		} else if _, err = os.Stat(filepath.Dir(d)); err != nil {
-			// NOTE: when `dest`'s parent directory does not exist
+		}
+
+		d, err = filepath.Abs(d)
+		if err != nil {
 			return err
+		}
+
+		if _, ok := opened[d]; ok {
+			log.Println("skipped")
+			continue
 		}
 
 		f, err := os.OpenFile(d, os.O_WRONLY|os.O_CREATE, 0644)
 		if err != nil {
 			return err
 		}
+		defer f.Close()
 
 		w = append(w, f)
-		defer f.Close()
+		opened[d] = struct{}{}
 		log.Printf("copy s3://%s/%s to %s\n", *input.Bucket, *input.Key, d) // debug
 	}
 

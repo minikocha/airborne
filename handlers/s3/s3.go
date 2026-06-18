@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path"
 	"path/filepath"
@@ -22,8 +23,15 @@ const (
 )
 
 type mapping struct {
-	dest string
-	src  *s3.GetObjectInput
+	dest  map[string]struct{}
+	input *s3.GetObjectInput
+}
+
+func NewMapping(dest string, input *s3.GetObjectInput) *mapping {
+	m := &mapping{dest: make(map[string]struct{})}
+	m.dest[dest] = struct{}{}
+	m.input = input
+	return m
 }
 
 type Handler struct {
@@ -31,7 +39,7 @@ type Handler struct {
 	bufferSize  int
 	client      *s3.Client
 	concurrency int
-	mappings    []*mapping
+	mappings    map[string]*mapping
 }
 
 type Option func(*Handler) error
@@ -62,6 +70,7 @@ func NewHandler(opts ...Option) (*Handler, error) {
 	handler := &Handler{
 		bufferSize:  defaultBufferSize,
 		concurrency: defaultConcurrency,
+		mappings:    make(map[string]*mapping),
 	}
 
 	if cfg, err := config.LoadDefaultConfig(context.TODO()); err != nil {
@@ -87,14 +96,19 @@ func (handler *Handler) Add(src string, dest string) error {
 		return fmt.Errorf("Invalid s3 path: %s", src)
 	}
 
-	handler.mappings = append(
-		handler.mappings,
-		&mapping{
-			dest: dest,
-			src: &s3.GetObjectInput{
+	dest = strings.TrimSuffix(dest, "/")
+
+	if m, ok := handler.mappings[src]; ok {
+		m.dest[dest] = struct{}{}
+	} else {
+		handler.mappings[src] = NewMapping(
+			dest,
+			&s3.GetObjectInput{
 				Bucket: aws.String(s[2]),
-				Key:    aws.String(s[3])}},
-	)
+				Key:    aws.String(s[3])},
+		)
+	}
+
 	return nil
 }
 
@@ -119,7 +133,7 @@ func (handler *Handler) Run(ctx context.Context) error {
 				wg.Go(func() {
 					defer func() { <-semCh }()
 
-					if err := handler.run(ctx, m.src, m.dest); err != nil {
+					if err := handler.run(ctx, m.input, m.dest); err != nil {
 						// NOTE: to prevent panic: sending to a closed channel
 						defer func() {
 							if r := recover(); r != nil {
@@ -142,33 +156,57 @@ func (handler *Handler) Run(ctx context.Context) error {
 	}
 }
 
-func (handler *Handler) run(ctx context.Context, input *s3.GetObjectInput, dest string) error {
-	if i, err := os.Stat(dest); err != nil && !errors.Is(err, os.ErrNotExist) {
-		// NOTE: when an error other than os.ErrNotExist occurs
-		return err
-	} else if err == nil && i.IsDir() {
-		// NOTE: when `dest` is a directory
-		dest = path.Join(dest, filepath.Base(*input.Key))
-	} else if _, err := os.Stat(filepath.Dir(dest)); err != nil {
-		// NOTE: when `dest`'s parent directory does not exist
-		return err
-	}
-
-	file, err := os.Create(dest)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-
+func (handler *Handler) run(ctx context.Context, input *s3.GetObjectInput, dest map[string]struct{}) error {
 	output, err := handler.client.GetObject(ctx, input)
 	if err != nil {
 		return err
 	}
 	defer output.Body.Close()
+	log.Printf("download s3://%s/%s\n", *input.Bucket, *input.Key) // debug
+
+	tmp, err := os.CreateTemp("", "")
+	if err != nil {
+		return err
+	}
+	defer func() {
+		tmp.Close()
+		os.Remove(tmp.Name())
+	}()
 
 	buf := handler.bufferPool.Get().([]byte)
 	defer handler.bufferPool.Put(buf)
-	if _, err := io.CopyBuffer(file, output.Body, buf); err != nil {
+	if _, err = io.CopyBuffer(tmp, output.Body, buf); err != nil {
+		return err
+	}
+
+	if _, err = tmp.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
+
+	var w []io.Writer
+	for d := range dest {
+		if i, err := os.Stat(d); err != nil && !errors.Is(err, os.ErrNotExist) {
+			// NOTE: when an error other than os.ErrNotExist occurs
+			return err
+		} else if err == nil && i.IsDir() {
+			// NOTE: when `dest` is a directory
+			d = path.Join(d, filepath.Base(*input.Key))
+		} else if _, err = os.Stat(filepath.Dir(d)); err != nil {
+			// NOTE: when `dest`'s parent directory does not exist
+			return err
+		}
+
+		f, err := os.OpenFile(d, os.O_WRONLY|os.O_CREATE, 0644)
+		if err != nil {
+			return err
+		}
+
+		w = append(w, f)
+		defer f.Close()
+		log.Printf("copy s3://%s/%s to %s\n", *input.Bucket, *input.Key, d) // debug
+	}
+
+	if _, err = io.CopyBuffer(io.MultiWriter(w...), tmp, buf); err != nil {
 		return err
 	}
 

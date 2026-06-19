@@ -156,26 +156,6 @@ func (handler *Handler) run(ctx context.Context, input *s3.GetObjectInput, dest 
 	defer output.Body.Close()
 	log.Printf("download s3://%s/%s\n", *input.Bucket, *input.Key) // debug
 
-	tmp, err := os.CreateTemp("", "")
-	if err != nil {
-		return err
-	}
-	defer func() {
-		tmp.Close()
-		os.Remove(tmp.Name())
-	}()
-
-	// そもそも一時ファイルに書き出さないで、初めから一斉に複数の宛先に書き込めば良い。
-	buf := handler.bufferPool.Get().([]byte)
-	defer handler.bufferPool.Put(buf)
-	if _, err = io.CopyBuffer(tmp, output.Body, buf); err != nil {
-		return err
-	}
-
-	if _, err = tmp.Seek(0, io.SeekStart); err != nil {
-		return err
-	}
-
 	var w []io.Writer
 	opened := make(map[string]struct{})
 	for _, d := range dest {
@@ -194,7 +174,7 @@ func (handler *Handler) run(ctx context.Context, input *s3.GetObjectInput, dest 
 		}
 
 		if _, ok := opened[d]; ok {
-			log.Println("skipped")
+			log.Println("skipped") // debug
 			continue
 		}
 
@@ -209,7 +189,9 @@ func (handler *Handler) run(ctx context.Context, input *s3.GetObjectInput, dest 
 		log.Printf("copy s3://%s/%s to %s\n", *input.Bucket, *input.Key, d) // debug
 	}
 
-	if _, err = io.CopyBuffer(io.MultiWriter(w...), tmp, buf); err != nil {
+	buf := handler.bufferPool.Get().([]byte)
+	defer handler.bufferPool.Put(buf)
+	if _, err = io.CopyBuffer(io.MultiWriter(w...), output.Body, buf); err != nil {
 		return err
 	}
 

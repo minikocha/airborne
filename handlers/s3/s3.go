@@ -56,9 +56,8 @@ func (handler *Handler) Add(src string, dst string) error {
 		return fmt.Errorf("Invalid s3 path: %s", src)
 	}
 
-	//TODO: destのバリデーションを実装
 	if len(dst) == 0 {
-		return fmt.Errorf("sss")
+		return fmt.Errorf("destination is empty")
 	}
 
 	if m, ok := handler.mappings[src]; ok {
@@ -97,8 +96,7 @@ func (handler *Handler) Run(ctx context.Context) error {
 				wg.Go(func() {
 					defer func() { <-semCh }()
 
-					// TODO: mappingそのものを渡すよう変更
-					if err := handler.run(ctx, m.source, m.destinations); err != nil {
+					if err := handler.run(ctx, m); err != nil {
 						// NOTE: to prevent panic: sending to a closed channel
 						defer func() {
 							if r := recover(); r != nil {
@@ -121,8 +119,8 @@ func (handler *Handler) Run(ctx context.Context) error {
 	}
 }
 
-func (handler *Handler) run(ctx context.Context, input *s3.GetObjectInput, dsts []string) error {
-	output, err := handler.client.GetObject(ctx, input)
+func (handler *Handler) run(ctx context.Context, mapping *mapping) error {
+	output, err := handler.client.GetObject(ctx, mapping.source) // TODO: trasfermanagerの使用を検討
 	if err != nil {
 		return err
 	}
@@ -130,14 +128,14 @@ func (handler *Handler) run(ctx context.Context, input *s3.GetObjectInput, dsts 
 
 	var w []io.Writer
 	opened := make(map[string]struct{})
-	for _, d := range dsts {
+	for _, d := range mapping.destinations {
 		i, err := os.Stat(d)
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
 
 		if i != nil && i.IsDir() {
-			d = path.Join(d, filepath.Base(*input.Key))
+			d = path.Join(d, filepath.Base(*mapping.source.Key))
 		}
 
 		d, err = filepath.Abs(d)

@@ -55,7 +55,7 @@ func (app *App) Run(ctx context.Context, args []string) error {
 	return nil
 }
 
-func (app *App) run(ctx context.Context, opts *Options, ch chan error) chan error {
+func (app *App) run(ctx context.Context, opts *Options, ch chan error) {
 	go func() {
 		defer close(ch)
 
@@ -63,7 +63,7 @@ func (app *App) run(ctx context.Context, opts *Options, ch chan error) chan erro
 		sem := make(chan struct{}, opts.Concurrency)
 		defer close(sem)
 
-		for _, p := range app.mappings {
+		for _, h := range app.mappings {
 			select {
 			case <-ctx.Done():
 				wg.Wait()
@@ -72,8 +72,8 @@ func (app *App) run(ctx context.Context, opts *Options, ch chan error) chan erro
 				wg.Go(func() {
 					defer func() { <-sem }()
 
-					p.SetConcurrency(opts.Concurrency)
-					if err := p.Run(ctx); err != nil {
+					h.SetConcurrency(opts.Concurrency)
+					if err := h.Run(ctx); err != nil {
 						if !opts.ContinueOnError {
 							// NOTE: to prevent panic: sending to a closed channel
 							defer func() {
@@ -91,5 +91,4 @@ func (app *App) run(ctx context.Context, opts *Options, ch chan error) chan erro
 		}
 		wg.Wait()
 	}()
-	return ch
 }

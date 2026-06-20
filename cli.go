@@ -7,30 +7,24 @@ import (
 	"sync"
 )
 
-const (
-	defaultGracePeriod = 0
-)
-
 type App struct {
 	mappings map[string]Handler
 }
 
-func NewApp() *App {
-	return &App{
-		mappings: make(map[string]Handler),
-	}
+func New() *App {
+	return &App{mappings: make(map[string]Handler)}
 }
 
 func (app *App) AddHandler(handler Handler) {
 	app.mappings[handler.Type()] = handler
 }
 
-func (app *App) AddSupply(handlerType string, src string, dest string) error {
+func (app *App) AddAssoc(handlerType string, src string, dst string) error {
 	if _, ok := app.mappings[handlerType]; !ok {
 		return fmt.Errorf("No handler matching the given type was found: %s", handlerType)
 	}
 
-	return app.mappings[handlerType].Add(src, dest)
+	return app.mappings[handlerType].Add(src, dst)
 }
 
 func (app *App) Run(ctx context.Context, args []string) error {
@@ -46,22 +40,22 @@ func (app *App) Run(ctx context.Context, args []string) error {
 		return nil
 	}
 
-	ch := app.run(ctx, opts)
+	ch := make(chan error, 1)
+	app.run(ctx, opts, ch)
 	select {
 	case err := <-ch:
 		if err != nil {
 			return err
 		}
 	case <-ctx.Done():
-		return ErrInterrupted // NOTE: when perform gracefull shutdown: app.cancel(ch)
+		return ErrInterrupted
 	}
 
-	slog.Info("airborne: fineshed")
+	slog.Info("airborne: finished")
 	return nil
 }
 
-func (app *App) run(ctx context.Context, opts *Options) chan error {
-	ch := make(chan error, 1)
+func (app *App) run(ctx context.Context, opts *Options, ch chan error) chan error {
 	go func() {
 		defer close(ch)
 
@@ -78,7 +72,7 @@ func (app *App) run(ctx context.Context, opts *Options) chan error {
 				wg.Go(func() {
 					defer func() { <-sem }()
 
-					p.SetConcurrency(opts.Concurrency) // TODO: 並列度を上げる
+					p.SetConcurrency(opts.Concurrency)
 					if err := p.Run(ctx); err != nil {
 						if !opts.ContinueOnError {
 							// NOTE: to prevent panic: sending to a closed channel
@@ -99,16 +93,3 @@ func (app *App) run(ctx context.Context, opts *Options) chan error {
 	}()
 	return ch
 }
-
-// NOTE: save this in case I need to perform gracefull shutdown in the future
-//func (app *App) cancel(ch <-chan error) error {
-//	ctx, cancel := context.WithTimeout(context.Background(), defaultGracePeriod*time.Second)
-//	defer cancel()
-//
-//	select {
-//	case <-ch:
-//		return ErrInterrupted
-//	case <-ctx.Done():
-//		return ctx.Err()
-//	}
-//}

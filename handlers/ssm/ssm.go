@@ -1,4 +1,4 @@
-package s3
+package ssm
 
 import (
 	"context"
@@ -13,7 +13,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/ssm"
 )
 
 const (
@@ -22,11 +22,11 @@ const (
 
 type mapping struct {
 	destinations []string
-	source       *s3.GetObjectInput
+	source       *ssm.GetParameterInput
 }
 
 type Handler struct {
-	client      *s3.Client
+	client      *ssm.Client
 	concurrency int
 	mappings    map[string]*mapping
 }
@@ -40,20 +40,19 @@ func New(optFns ...func(*Handler)) (*Handler, error) {
 	if cfg, err := config.LoadDefaultConfig(context.TODO()); err != nil {
 		return nil, err
 	} else {
-		handler.client = s3.NewFromConfig(cfg)
+		handler.client = ssm.NewFromConfig(cfg)
 	}
 
-	for _, f := range optFns {
-		f(handler)
+	for _, fn := range optFns {
+		fn(handler)
 	}
 
 	return handler, nil
 }
 
 func (handler *Handler) Add(src string, dst string) error {
-	s := strings.SplitN(src, "/", 4)
-	if len(s) != 4 || s[0] != "s3:" || strings.HasSuffix(s[3], "/") {
-		return fmt.Errorf("Invalid s3 path: %s", src)
+	if len(src) == 0 || strings.HasSuffix(src, "/") {
+		return fmt.Errorf("Invalid parameter name: %s", src)
 	}
 
 	//TODO: destのバリデーションを実装
@@ -66,9 +65,7 @@ func (handler *Handler) Add(src string, dst string) error {
 	} else {
 		m = &mapping{
 			destinations: []string{dst},
-			source: &s3.GetObjectInput{
-				Bucket: aws.String(s[2]),
-				Key:    aws.String(s[3])},
+			source:       &ssm.GetParameterInput{Name: aws.String(src)},
 		}
 		handler.mappings[src] = m
 	}
@@ -121,12 +118,11 @@ func (handler *Handler) Run(ctx context.Context) error {
 	}
 }
 
-func (handler *Handler) run(ctx context.Context, input *s3.GetObjectInput, dsts []string) error {
-	output, err := handler.client.GetObject(ctx, input)
+func (handler *Handler) run(ctx context.Context, src *ssm.GetParameterInput, dsts []string) error {
+	output, err := handler.client.GetParameter(ctx, src)
 	if err != nil {
 		return err
 	}
-	defer output.Body.Close()
 
 	var w []io.Writer
 	opened := make(map[string]struct{})
@@ -137,7 +133,7 @@ func (handler *Handler) run(ctx context.Context, input *s3.GetObjectInput, dsts 
 		}
 
 		if i != nil && i.IsDir() {
-			d = path.Join(d, filepath.Base(*input.Key))
+			d = path.Join(d, filepath.Base(*src.Name))
 		}
 
 		d, err = filepath.Abs(d)
@@ -159,8 +155,7 @@ func (handler *Handler) run(ctx context.Context, input *s3.GetObjectInput, dsts 
 		opened[d] = struct{}{}
 	}
 
-	// TODO: "io.CopyBuffer()"の使用を検討
-	if _, err = io.Copy(io.MultiWriter(w...), output.Body); err != nil {
+	if _, err := io.Copy(io.MultiWriter(w...), strings.NewReader(*output.Parameter.Value)); err != nil {
 		return err
 	}
 
@@ -177,5 +172,5 @@ func (handler *Handler) SetConcurrency(i int) error {
 }
 
 func (handler *Handler) Type() string {
-	return "s3"
+	return "ssm"
 }
